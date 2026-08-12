@@ -18,6 +18,7 @@ object Db {
   val scalarTables: List[String] = mainTable :: scalarChildTables
 
   val jsonbTable: String = "wide_events_jsonb"
+  val jsonbExternalTable: String = "wide_events_jsonb_external"
 
   def transactor: Resource[IO, HikariTransactor[IO]] =
     HikariTransactor.newHikariTransactor[IO](
@@ -38,6 +39,7 @@ object Db {
     sql"DROP TABLE IF EXISTS wide_job_failed",
     sql"DROP TABLE IF EXISTS wide_events",
     sql"DROP TABLE IF EXISTS wide_events_jsonb",
+    sql"DROP TABLE IF EXISTS wide_events_jsonb_external",
     sql"""
       CREATE TABLE wide_events (
         event_id     UUID PRIMARY KEY,
@@ -85,14 +87,30 @@ object Db {
         level        TEXT NOT NULL,
         body         JSONB NOT NULL
       )
-    """
+    """,
+    // Same shape as wide_events_jsonb, but STORAGE EXTERNAL disables TOAST compression on
+    // `body` (it can still move out-of-line, just uncompressed) — isolates the effect of
+    // compression from the effect of TOASTing itself. STORAGE isn't a CREATE TABLE
+    // column-definition clause; it can only be set afterwards via ALTER TABLE.
+    sql"""
+      CREATE TABLE wide_events_jsonb_external (
+        event_id     UUID PRIMARY KEY,
+        job_id       UUID NOT NULL,
+        event_type   TEXT NOT NULL,
+        occurred_at  TIMESTAMPTZ NOT NULL,
+        source       TEXT NOT NULL,
+        level        TEXT NOT NULL,
+        body         JSONB NOT NULL
+      )
+    """,
+    sql"ALTER TABLE wide_events_jsonb_external ALTER COLUMN body SET STORAGE EXTERNAL"
   )
 
   def recreateSchema(xa: Transactor[IO]): IO[Unit] =
     ddlStatements.traverse_(_.update.run.transact(xa))
 
   def analyze(xa: Transactor[IO]): IO[Unit] =
-    (scalarTables :+ jsonbTable).traverse_ { table =>
+    (scalarTables :+ jsonbTable :+ jsonbExternalTable).traverse_ { table =>
       Fragment.const(s"ANALYZE $table").update.run.transact(xa)
     }
 }

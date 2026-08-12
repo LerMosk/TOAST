@@ -35,10 +35,12 @@ object Benchmark {
     for {
       scalarSizes <- Db.scalarTables.traverse(tableSize(xa, _))
       jsonbSize <- tableSize(xa, Db.jsonbTable)
+      jsonbExternalSize <- tableSize(xa, Db.jsonbExternalTable)
       _ <- IO.println("=== Storage size ===")
       _ <- scalarSizes.traverse_(printSize)
       _ <- printSize(TableSize.sum("scalar total", scalarSizes))
       _ <- printSize(jsonbSize)
+      _ <- printSize(jsonbExternalSize)
     } yield ()
 
   private def printSize(ts: TableSize): IO[Unit] =
@@ -67,39 +69,34 @@ object Benchmark {
       (results.head._1, median(results.map(_._2)))
     }
 
-  def insertBenchmarkReport(scalarRepo: EventRepo, jsonbRepo: EventRepo, events: Stream[IO, Event], expectedCount: Long): IO[Unit] =
+  def insertBenchmarkReport(
+      repos: List[(String, EventRepo)],
+      events: Stream[IO, Event],
+      expectedCount: Long
+  ): IO[Unit] =
     for {
-      _ <- IO.println("Inserting into scalar tables...")
-      scalarResult <- timeMillis(scalarRepo.insertAll(events))
-      _ <- IO.println("Inserting into wide_events_jsonb...")
-      jsonbResult <- timeMillis(jsonbRepo.insertAll(events))
+      results <- repos.traverse { case (label, repo) =>
+        IO.println(s"Inserting into $label...") *> timeMillis(repo.insertAll(events)).map { case (_, ms) => (label, ms) }
+      }
       _ <- IO.println(s"=== Insert (create) benchmark (n=$expectedCount) ===")
-      _ <- IO.println(f"scalar (4 tables)      ${scalarResult._2}%6d ms")
-      _ <- IO.println(f"wide_events_jsonb      ${jsonbResult._2}%6d ms")
+      _ <- results.traverse_ { case (label, ms) => IO.println(f"$label%-24s $ms%6d ms") }
     } yield ()
 
-  def readBenchmarkReport(scalarRepo: EventRepo, jsonbRepo: EventRepo, expectedCount: Long): IO[Unit] =
+  def readBenchmarkReport(repos: List[(String, EventRepo)], expectedCount: Long): IO[Unit] =
     for {
-      scalarResult <- timeFullRead(scalarRepo)
-      jsonbResult <- timeFullRead(jsonbRepo)
-      scalarCount = scalarResult._1
-      scalarMs = scalarResult._2
-      jsonbCount = jsonbResult._1
-      jsonbMs = jsonbResult._2
-      _ <- IO.raiseUnless(scalarCount == expectedCount)(
-        new RuntimeException(s"scalar read count mismatch: expected $expectedCount, got $scalarCount")
-      )
-      _ <- IO.raiseUnless(jsonbCount == expectedCount)(
-        new RuntimeException(s"jsonb read count mismatch: expected $expectedCount, got $jsonbCount")
-      )
+      results <- repos.traverse { case (label, repo) => timeFullRead(repo).map { case (count, ms) => (label, count, ms) } }
+      _ <- results.traverse_ { case (label, count, _) =>
+        IO.raiseUnless(count == expectedCount)(
+          new RuntimeException(s"$label read count mismatch: expected $expectedCount, got $count")
+        )
+      }
       _ <- IO.println(s"=== Full table read benchmark (n=$expectedCount, median of 5 runs) ===")
-      _ <- IO.println(f"scalar (4 tables)      $scalarMs%6d ms")
-      _ <- IO.println(f"wide_events_jsonb      $jsonbMs%6d ms")
+      _ <- results.traverse_ { case (label, _, ms) => IO.println(f"$label%-24s $ms%6d ms") }
     } yield ()
 
   // Two bounded passes per repo (count, then a small filtered sample) instead of
   // materializing the whole table into a Map, so this stays memory-safe at any n.
-  def sanityCheck(scalarRepo: EventRepo, jsonbRepo: EventRepo, inserted: List[Event]): IO[Unit] = {
+  def sanityCheck(repos: List[(String, EventRepo)], inserted: List[Event]): IO[Unit] = {
     val expectedCount = inserted.size.toLong
     val sample = inserted.take(20)
     val sampleIds = sample.map(_.eventId).toSet
@@ -123,8 +120,7 @@ object Benchmark {
       } yield ()
 
     for {
-      _ <- checkRepo(scalarRepo, "scalar")
-      _ <- checkRepo(jsonbRepo, "jsonb")
+      _ <- repos.traverse_ { case (label, repo) => checkRepo(repo, label) }
       _ <- IO.println("Sanity check passed: row counts and sample round-trips match.")
     } yield ()
   }

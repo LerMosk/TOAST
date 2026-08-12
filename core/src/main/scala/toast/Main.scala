@@ -15,7 +15,13 @@ object Main extends IOApp {
 
     db.transactor.use { xa =>
       val scalarRepo = new ScalarEventRepo(xa, config)
-      val jsonbRepo = new JsonbEventRepo(xa)
+      val jsonbRepo = new JsonbEventRepo(xa, db.jsonbTable)
+      val jsonbExternalRepo = new JsonbEventRepo(xa, db.jsonbExternalTable)
+      val repos = List(
+        s"scalar (${db.scalarTables.size} tables)" -> scalarRepo,
+        "events_jsonb (extended)" -> jsonbRepo,
+        "events_jsonb (external)" -> jsonbExternalRepo
+      )
 
       for {
         _ <- IO.println(s"Config: $config")
@@ -23,12 +29,12 @@ object Main extends IOApp {
         events = EventGenerator.generate(config.generateEvents, config)
         _ <- IO.println("Recreating schema...")
         _ <- db.recreateSchema(xa)
-        _ <- Benchmark.insertBenchmarkReport(scalarRepo, jsonbRepo, db, Stream.emits(events).covary[IO], config.generateEvents.toLong)
+        _ <- Benchmark.insertBenchmarkReport(repos, Stream.emits(events).covary[IO], config.generateEvents.toLong)
         _ <- IO.println("Analyzing tables...")
         _ <- db.analyze(xa)
-        _ <- Benchmark.sanityCheck(scalarRepo, jsonbRepo, events)
+        _ <- Benchmark.sanityCheck(repos, events)
         _ <- Benchmark.sizeReport(xa, db)
-        _ <- Benchmark.readBenchmarkReport(scalarRepo, jsonbRepo, db, config.generateEvents.toLong)
+        _ <- Benchmark.readBenchmarkReport(repos, config.generateEvents.toLong)
       } yield ExitCode.Success
     }
   }

@@ -13,6 +13,7 @@ final class Db(config: Config) {
 
   val mainTable: String = "events_scalar"
   val jsonbTable: String = "events_jsonb"
+  val jsonbExternalTable: String = "events_jsonb_external"
 
   val scalarChildTables: List[String] =
     (if (config.enableJobCreated) List("events_job_created", "events_job_created_params") else Nil) ++
@@ -38,6 +39,7 @@ final class Db(config: Config) {
   private val dropJobFailed = sql"DROP TABLE IF EXISTS events_job_failed"
   private val dropMain = sql"DROP TABLE IF EXISTS events_scalar"
   private val dropJsonb = sql"DROP TABLE IF EXISTS events_jsonb"
+  private val dropJsonbExternal = sql"DROP TABLE IF EXISTS events_jsonb_external"
 
   private val createMain = sql"""
     CREATE TABLE events_scalar (
@@ -108,6 +110,26 @@ final class Db(config: Config) {
     )
   """
 
+  // Same shape as events_jsonb, but STORAGE EXTERNAL disables TOAST compression on `body`
+  // (it can still move out-of-line, just uncompressed) — lets the size/read comparison
+  // isolate the effect of compression from the effect of TOASTing itself.
+  // STORAGE isn't a CREATE TABLE column-definition clause; it can only be set afterwards
+  // via ALTER TABLE.
+  private val createJsonbExternal = sql"""
+    CREATE TABLE events_jsonb_external (
+      event_id     UUID PRIMARY KEY,
+      job_id       UUID NOT NULL,
+      event_type   TEXT NOT NULL,
+      occurred_at  TIMESTAMPTZ NOT NULL,
+      source       TEXT NOT NULL,
+      level        TEXT NOT NULL,
+      body         JSONB NOT NULL
+    )
+  """
+
+  private val alterJsonbExternalStorage =
+    sql"ALTER TABLE events_jsonb_external ALTER COLUMN body SET STORAGE EXTERNAL"
+
   private val ddlStatements: List[Fragment] = {
     // Drops always cover every possible table (idempotent DROP IF EXISTS), regardless of
     // which variants this run's config enables: a *previous* run may have had a different
@@ -123,14 +145,15 @@ final class Db(config: Config) {
         (if (config.enableJobSuccess) List(createJobSuccess) else Nil) ++
         (if (config.enableJobFailed) List(createJobFailed) else Nil)
 
-    dropChildren ++ List(dropMain, dropJsonb, createMain) ++ createChildren ++ List(createJsonb)
+    dropChildren ++ List(dropMain, dropJsonb, dropJsonbExternal, createMain) ++ createChildren ++
+      List(createJsonb, createJsonbExternal, alterJsonbExternalStorage)
   }
 
   def recreateSchema(xa: Transactor[IO]): IO[Unit] =
     ddlStatements.traverse_(_.update.run.transact(xa))
 
   def analyze(xa: Transactor[IO]): IO[Unit] =
-    (scalarTables :+ jsonbTable).traverse_ { table =>
+    (scalarTables :+ jsonbTable :+ jsonbExternalTable).traverse_ { table =>
       Fragment.const(s"ANALYZE $table").update.run.transact(xa)
     }
 }

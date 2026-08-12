@@ -8,7 +8,9 @@ import org.typelevel.doobie.postgres.implicits._
 import org.typelevel.doobie.postgres.circe.jsonb.implicits._
 import toast.wide.model.{Event, EventBody}
 
-final class JsonbEventRepo(xa: Transactor[IO]) extends EventRepo {
+// Parameterized by table name so the same repo can target both wide_events_jsonb (default
+// EXTENDED storage, compressed) and wide_events_jsonb_external (STORAGE EXTERNAL, uncompressed).
+final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo {
 
   private val batchSize = 10000
 
@@ -22,14 +24,15 @@ final class JsonbEventRepo(xa: Transactor[IO]) extends EventRepo {
 
   private val insert =
     Update[Row](
-      "INSERT INTO wide_events_jsonb (event_id, job_id, event_type, occurred_at, source, level, body) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      s"INSERT INTO $tableName (event_id, job_id, event_type, occurred_at, source, level, body) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
 
   override def insertAll(events: Stream[IO, Event]): IO[Unit] =
     events.chunkN(batchSize).evalMap(chunk => insert.updateMany(chunk.toList.map(toRow)).transact(xa).void).compile.drain
 
   override def selectAll(): Stream[IO, Event] =
-    sql"SELECT event_id, job_id, event_type, occurred_at, source, level, body FROM wide_events_jsonb"
+    Fragment
+      .const(s"SELECT event_id, job_id, event_type, occurred_at, source, level, body FROM $tableName")
       .query[Row]
       .stream
       .transact(xa)
