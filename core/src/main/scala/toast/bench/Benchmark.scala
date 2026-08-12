@@ -80,7 +80,7 @@ object Benchmark {
       _ <- IO.println("Inserting into events_jsonb...")
       jsonbResult <- timeMillis(jsonbRepo.insertAll(events))
       _ <- IO.println(s"=== Insert (create) benchmark (n=$expectedCount) ===")
-      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)       ${scalarResult._2}%6d ms")
+      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)      ${scalarResult._2}%6d ms")
       _ <- IO.println(f"events_jsonb           ${jsonbResult._2}%6d ms")
     } yield ()
 

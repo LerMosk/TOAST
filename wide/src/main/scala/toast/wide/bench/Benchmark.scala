@@ -11,6 +11,12 @@ import toast.wide.model.Event
 object Benchmark {
 
   final case class TableSize(name: String, heapBytes: Long, toastBytes: Long, totalBytes: Long)
+  object TableSize {
+    def sum(name: String, ts: List[TableSize]): TableSize = {
+      val (heapBytes, toastBytes, totalBytes) = ts.foldMap(ts => (ts.heapBytes, ts.toastBytes, ts.totalBytes))
+      TableSize(name, heapBytes, toastBytes, totalBytes)
+    }
+  }
 
   private def bytesToMb(bytes: Long): Double = bytes / (1024.0 * 1024.0)
 
@@ -30,15 +36,15 @@ object Benchmark {
       scalarSizes <- Db.scalarTables.traverse(tableSize(xa, _))
       jsonbSize <- tableSize(xa, Db.jsonbTable)
       _ <- IO.println("=== Storage size ===")
-      _ <- scalarSizes.traverse_ { s =>
-        IO.println(f"${s.name}%-25s heap: ${bytesToMb(s.heapBytes)}%8.2f MB")
-      }
-      scalarTotal = scalarSizes.map(_.totalBytes).sum
-      _ <- IO.println(f"  scalar total             ${bytesToMb(scalarTotal)}%8.2f MB")
-      _ <- IO.println(
-        f"${jsonbSize.name}%-25s heap: ${bytesToMb(jsonbSize.heapBytes)}%8.2f MB   toast: ${bytesToMb(jsonbSize.toastBytes)}%8.2f MB   total: ${bytesToMb(jsonbSize.totalBytes)}%8.2f MB"
-      )
+      _ <- scalarSizes.traverse_(printSize)
+      _ <- printSize(TableSize.sum("scalar total", scalarSizes))
+      _ <- printSize(jsonbSize)
     } yield ()
+
+  private def printSize(ts: TableSize): IO[Unit] =
+    IO.println(
+      f"${ts.name}%-25s heap: ${bytesToMb(ts.heapBytes)}%8.2f MB   toast: ${bytesToMb(ts.toastBytes)}%8.2f MB   total: ${bytesToMb(ts.totalBytes)}%8.2f MB"
+    )
 
   private def median(xs: List[Long]): Long = {
     val sorted = xs.sorted
