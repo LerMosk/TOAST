@@ -11,10 +11,26 @@ import toast.model.Event
 object Benchmark {
 
   final case class TableSize(name: String, heapBytes: Long, toastBytes: Long, totalBytes: Long)
+  object TableSize {
+    def sum(name: String, ts: List[TableSize]): TableSize = {
+      val (heapBytes, toastBytes, totalBytes) = ts.foldMap(ts => (ts.heapBytes, ts.toastBytes, ts.totalBytes))
+      TableSize(name, heapBytes, toastBytes, totalBytes)
+    }
+  }
+
+    def sizeReport(xa: Transactor[IO], db: Db): IO[Unit] =
+    for {
+      scalarSizes <- db.scalarTables.traverse(tableSize(xa, _))
+      jsonbSize <- tableSize(xa, db.jsonbTable)
+      _ <- IO.println("=== Storage size ===")
+      _ <- scalarSizes.traverse_(printSize)
+      _ <- printSize(TableSize.sum("scalar total", scalarSizes))
+      _ <- printSize(jsonbSize)
+    } yield ()
 
   private def bytesToMb(bytes: Long): Double = bytes / (1024.0 * 1024.0)
 
-  def tableSize(xa: Transactor[IO], table: String): IO[TableSize] =
+  private def tableSize(xa: Transactor[IO], table: String): IO[TableSize] =
     sql"""
       SELECT pg_relation_size(c.oid),
              COALESCE(pg_total_relation_size(c.reltoastrelid), 0),
@@ -25,20 +41,10 @@ object Benchmark {
       TableSize(table, heap, toast, total)
     }
 
-  def sizeReport(xa: Transactor[IO], db: Db): IO[Unit] =
-    for {
-      scalarSizes <- db.scalarTables.traverse(tableSize(xa, _))
-      jsonbSize <- tableSize(xa, db.jsonbTable)
-      _ <- IO.println("=== Storage size ===")
-      _ <- scalarSizes.traverse_ { s =>
-        IO.println(f"${s.name}%-25s heap: ${bytesToMb(s.heapBytes)}%8.2f MB")
-      }
-      scalarTotal = scalarSizes.map(_.totalBytes).sum
-      _ <- IO.println(f"  scalar total             ${bytesToMb(scalarTotal)}%8.2f MB")
-      _ <- IO.println(
-        f"${jsonbSize.name}%-25s heap: ${bytesToMb(jsonbSize.heapBytes)}%8.2f MB   toast: ${bytesToMb(jsonbSize.toastBytes)}%8.2f MB   total: ${bytesToMb(jsonbSize.totalBytes)}%8.2f MB"
+  private def printSize(ts: TableSize): IO[Unit] = 
+    IO.println(
+        f"${ts.name}%-25s heap: ${bytesToMb(ts.heapBytes)}%8.2f MB   toast: ${bytesToMb(ts.toastBytes)}%8.2f MB   total: ${bytesToMb(ts.totalBytes)}%8.2f MB"
       )
-    } yield ()
 
   private def median(xs: List[Long]): Long = {
     val sorted = xs.sorted
@@ -74,7 +80,7 @@ object Benchmark {
       _ <- IO.println("Inserting into events_jsonb...")
       jsonbResult <- timeMillis(jsonbRepo.insertAll(events))
       _ <- IO.println(s"=== Insert (create) benchmark (n=$expectedCount) ===")
-      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)     ${scalarResult._2}%6d ms")
+      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)       ${scalarResult._2}%6d ms")
       _ <- IO.println(f"events_jsonb           ${jsonbResult._2}%6d ms")
     } yield ()
 
@@ -93,7 +99,7 @@ object Benchmark {
         new RuntimeException(s"jsonb read count mismatch: expected $expectedCount, got $jsonbCount")
       )
       _ <- IO.println(s"=== Full table read benchmark (n=$expectedCount, median of 5 runs) ===")
-      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)   $scalarMs%6d ms")
+      _ <- IO.println(f"scalar (${db.scalarTables.size} tables)      $scalarMs%6d ms")
       _ <- IO.println(f"events_jsonb           $jsonbMs%6d ms")
     } yield ()
 

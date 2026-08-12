@@ -58,11 +58,11 @@ object Db {
       )
     """),
     Fragment.const(s"""
-      CREATE TABLE wide_job_created (
-        event_id      UUID PRIMARY KEY REFERENCES wide_events (event_id),
-        priority      INT NOT NULL,
-        submitted_by  TEXT NOT NULL,
-        queue_name    TEXT NOT NULL,
+      CREATE TABLE wide_job_success (
+        event_id           UUID PRIMARY KEY REFERENCES wide_events (event_id),
+        duration_ms        BIGINT NOT NULL,
+        result_summary     TEXT NOT NULL,
+        output_size_bytes  BIGINT NOT NULL,
         ${attrColumnsDdl(22)}
       )
     """),
