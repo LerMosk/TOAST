@@ -45,7 +45,9 @@ object Benchmark {
 
   private def printSize(ts: TableSize): IO[Unit] =
     IO.println(
-      f"${ts.name}%-25s heap: ${bytesToMb(ts.heapBytes)}%8.2f MB   toast: ${bytesToMb(ts.toastBytes)}%8.2f MB   total: ${bytesToMb(ts.totalBytes)}%8.2f MB"
+      f"${ts.name}%-28s heap: ${bytesToMb(ts.heapBytes)}%8.2f MB   " +
+        f"toast: ${bytesToMb(ts.toastBytes)}%8.2f MB   " +
+        f"total: ${bytesToMb(ts.totalBytes)}%8.2f MB"
     )
 
   private def median(xs: List[Long]): Long = {
@@ -79,7 +81,7 @@ object Benchmark {
         IO.println(s"Inserting into $label...") *> timeMillis(repo.insertAll(events)).map { case (_, ms) => (label, ms) }
       }
       _ <- IO.println(s"=== Insert (create) benchmark (n=$expectedCount) ===")
-      _ <- results.traverse_ { case (label, ms) => IO.println(f"$label%-24s $ms%6d ms") }
+      _ <- results.traverse_ { case (label, ms) => IO.println(f"$label%-28s $ms%6d ms") }
     } yield ()
 
   def readBenchmarkReport(repos: List[(String, EventRepo)], expectedCount: Long): IO[Unit] =
@@ -91,7 +93,7 @@ object Benchmark {
         )
       }
       _ <- IO.println(s"=== Full table read benchmark (n=$expectedCount, median of 5 runs) ===")
-      _ <- results.traverse_ { case (label, _, ms) => IO.println(f"$label%-24s $ms%6d ms") }
+      _ <- results.traverse_ { case (label, _, ms) => IO.println(f"$label%-28s $ms%6d ms") }
     } yield ()
 
   // Two bounded passes per repo (count, then a small filtered sample) instead of
