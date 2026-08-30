@@ -11,14 +11,25 @@ import toast.model.{Event, EventBody, Param}
 
 final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRepo[Event] {
 
-  private val batchSize = 10000
-
   private type MainRow = (java.util.UUID, java.util.UUID, String, java.time.Instant, String, String)
   private type CreatedRow = (java.util.UUID, Int, String, String)
   private type CreatedParamsRow = (java.util.UUID, Int, String, String)
   private type InProgressRow = (java.util.UUID, String, Int, Int)
   private type SuccessRow = (java.util.UUID, Long, String, Long)
   private type FailedRow = (java.util.UUID, Int, String, String)
+
+  // One row per event covering all four variants at once (main LEFT JOINed with every
+  // variant table): exactly one column group is non-NULL per row, determined by eventType.
+  // params is deliberately not part of this row — it's one-to-many, so it's fetched by a
+  // separate query and merged onto JobCreated events in Scala (see selectAll).
+  private final case class AllRow(
+      eventId: java.util.UUID, jobId: java.util.UUID, eventType: String, occurredAt: java.time.Instant,
+      source: String, level: String,
+      cPriority: Option[Int], cSubmittedBy: Option[String], cQueueName: Option[String],
+      pWorkerId: Option[String], pAttempt: Option[Int], pProgressPercent: Option[Int],
+      sDurationMs: Option[Long], sResultSummary: Option[String], sOutputSizeBytes: Option[Long],
+      fAttempt: Option[Int], fErrorMessage: Option[String], fStackTrace: Option[String]
+  )
 
   private def toMainRow(e: Event): MainRow =
     (e.eventId, e.jobId, e.eventType, e.occurredAt, e.source, e.level)
@@ -69,101 +80,93 @@ final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRep
     )
 
   // Disabled variants have no table at all, so their Update/Query must never even be
-  // attempted (a PreparedStatement against a nonexistent table fails at prepare time,
-  // even with an empty batch) — every variant is gated by its config flag below.
-  private def insertBatch(events: List[Event]): IO[Unit] = {
-    val createdEvents = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobCreated) => (e, b) }
-    val created = createdEvents.map { case (e, b) => toCreatedRow(e, b) }
-    val createdParams = createdEvents.flatMap { case (e, b) => toCreatedParamsRows(e, b) }
-    val inProgress = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobInProgress) => toInProgressRow(e, b) }
-    val success = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobSuccess) => toSuccessRow(e, b) }
-    val failed = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobFailed) => toFailedRow(e, b) }
-
-    val childInserts: List[IO[Int]] =
-      (if (config.enableJobCreated) List(insertCreated.updateMany(created).transact(xa)) else Nil) ++
-        (if (config.enableJobInProgress) List(insertInProgress.updateMany(inProgress).transact(xa)) else Nil) ++
-        (if (config.enableJobSuccess) List(insertSuccess.updateMany(success).transact(xa)) else Nil) ++
-        (if (config.enableJobFailed) List(insertFailed.updateMany(failed).transact(xa)) else Nil)
-
-    // events_scalar must be populated before the child tables (FK), and events_job_created
-    // before events_job_created_params (FK on top of a FK).
+  // attempted (a PreparedStatement against a nonexistent table fails at prepare time) —
+  // every variant is gated by its config flag below.
+  //
+  // Each event is one ConnectionIO program (main row + its variant row, and for JobCreated
+  // its whole params list as a single batch) run via a single .transact(xa) call, so one
+  // event = one DB transaction. events_scalar must be populated before the child row (FK).
+  private def insertOneEvent(e: Event): ConnectionIO[Unit] = {
+    val childInsert: ConnectionIO[Unit] = e.body match {
+      case b: EventBody.JobCreated if config.enableJobCreated =>
+        val params = toCreatedParamsRows(e, b)
+        for {
+          _ <- insertCreated.run(toCreatedRow(e, b))
+          _ <- if (params.nonEmpty) insertCreatedParams.updateMany(params).void else ().pure[ConnectionIO]
+        } yield ()
+      case b: EventBody.JobInProgress if config.enableJobInProgress =>
+        insertInProgress.run(toInProgressRow(e, b)).void
+      case b: EventBody.JobSuccess if config.enableJobSuccess =>
+        insertSuccess.run(toSuccessRow(e, b)).void
+      case b: EventBody.JobFailed if config.enableJobFailed =>
+        insertFailed.run(toFailedRow(e, b)).void
+      case _ =>
+        ().pure[ConnectionIO]
+    }
     for {
-      _ <- insertMain.updateMany(events.map(toMainRow)).transact(xa)
-      _ <- childInserts.traverse_(identity)
-      // A single event-batch of JobCreated rows can still fan out past batchSize params;
-      // sub-batch the JDBC insert itself to keep each addBatch bounded.
-      _ <-
-        if (config.enableJobCreated)
-          createdParams.grouped(batchSize).toList.traverse_(chunk => insertCreatedParams.updateMany(chunk).transact(xa))
-        else IO.unit
+      _ <- insertMain.run(toMainRow(e))
+      _ <- childInsert
     } yield ()
   }
 
   override def insertAll(events: Stream[IO, Event]): IO[Unit] =
-    events.chunkN(batchSize).evalMap(chunk => insertBatch(chunk.toList)).compile.drain
+    events.evalMap(e => insertOneEvent(e).transact(xa)).compile.drain
 
-  override def selectAll(): Stream[IO, Event] = {
-    val created: Stream[IO, Event] =
+  // params is one-to-many, so it can't sit in the one-row-per-event AllRow query below
+  // without multiplying rows per event; instead it's loaded once here as event_id -> params
+  // and merged onto JobCreated events in Scala, in selectAll.
+  private def loadCreatedParams(): IO[Map[java.util.UUID, List[Param]]] =
+    if (!config.enableJobCreated) IO.pure(Map.empty)
+    else
       sql"""
-        SELECT m.event_id, m.job_id, m.occurred_at, m.source, m.level, c.priority, c.submitted_by, c.queue_name,
-               COALESCE(array_agg(p.name ORDER BY p.seq) FILTER (WHERE p.event_id IS NOT NULL), ARRAY[]::text[]),
-               COALESCE(array_agg(p.value ORDER BY p.seq) FILTER (WHERE p.event_id IS NOT NULL), ARRAY[]::text[])
-        FROM events_scalar m
-          JOIN events_job_created c ON m.event_id = c.event_id
-          LEFT JOIN events_job_created_params p ON c.event_id = p.event_id
-        GROUP BY m.event_id, m.job_id, m.occurred_at, m.source, m.level, c.priority, c.submitted_by, c.queue_name
+        SELECT event_id, seq, name, value
+        FROM events_job_created_params
+        ORDER BY event_id, seq
       """
-        .query[(java.util.UUID, java.util.UUID, java.time.Instant, String, String, Int, String, String, List[String], List[String])]
+        .query[(java.util.UUID, Int, String, String)]
+        .to[List]
+        .transact(xa)
+        .map(_.groupBy(_._1).view.mapValues(_.map { case (_, _, name, value) => Param(name, value) }.toList).toMap)
+
+  // Disabled variants have no table at all, so a LEFT JOIN against one would fail to even
+  // prepare; instead disabled variants are stubbed as typed NULL literals in the SELECT
+  // list, so the query always returns the same fixed AllRow shape regardless of config.
+  override def selectAll(): Stream[IO, Event] =
+    Stream.eval(loadCreatedParams()).flatMap { paramsByEvent =>
+      val createdJoin = if (config.enableJobCreated) "LEFT JOIN events_job_created c ON m.event_id = c.event_id" else ""
+      val createdCols = if (config.enableJobCreated) "c.priority, c.submitted_by, c.queue_name" else "NULL::int4, NULL::text, NULL::text"
+      val inProgressJoin = if (config.enableJobInProgress) "LEFT JOIN events_job_in_progress p ON m.event_id = p.event_id" else ""
+      val inProgressCols = if (config.enableJobInProgress) "p.worker_id, p.attempt, p.progress_percent" else "NULL::text, NULL::int4, NULL::int4"
+      val successJoin = if (config.enableJobSuccess) "LEFT JOIN events_job_success s ON m.event_id = s.event_id" else ""
+      val successCols = if (config.enableJobSuccess) "s.duration_ms, s.result_summary, s.output_size_bytes" else "NULL::int8, NULL::text, NULL::int8"
+      val failedJoin = if (config.enableJobFailed) "LEFT JOIN events_job_failed f ON m.event_id = f.event_id" else ""
+      val failedCols = if (config.enableJobFailed) "f.attempt, f.error_message, f.stack_trace" else "NULL::int4, NULL::text, NULL::text"
+
+      Fragment
+        .const(s"""
+          SELECT m.event_id, m.job_id, m.event_type, m.occurred_at, m.source, m.level,
+                 $createdCols, $inProgressCols, $successCols, $failedCols
+          FROM events_scalar m
+            $createdJoin
+            $inProgressJoin
+            $successJoin
+            $failedJoin
+        """)
+        .query[AllRow]
         .stream
         .transact(xa)
-        .map { case (eventId, jobId, occurredAt, source, level, priority, submittedBy, queueName, names, values) =>
-          val params = names.zip(values).map { case (name, value) => Param(name, value) }
-          Event(eventId, jobId, Event.JobCreatedType, occurredAt, source, level, EventBody.JobCreated(priority, submittedBy, queueName, params))
+        .map { r =>
+          val body: EventBody = r.eventType match {
+            case Event.JobCreatedType =>
+              EventBody.JobCreated(r.cPriority.get, r.cSubmittedBy.get, r.cQueueName.get, paramsByEvent.getOrElse(r.eventId, Nil))
+            case Event.JobInProgressType =>
+              EventBody.JobInProgress(r.pWorkerId.get, r.pAttempt.get, r.pProgressPercent.get)
+            case Event.JobSuccessType =>
+              EventBody.JobSuccess(r.sDurationMs.get, r.sResultSummary.get, r.sOutputSizeBytes.get)
+            case Event.JobFailedType =>
+              EventBody.JobFailed(r.fAttempt.get, r.fErrorMessage.get, r.fStackTrace.get)
+          }
+          Event(r.eventId, r.jobId, r.eventType, r.occurredAt, r.source, r.level, body)
         }
-
-    val inProgress: Stream[IO, Event] =
-      sql"""
-        SELECT m.event_id, m.job_id, m.occurred_at, m.source, m.level, p.worker_id, p.attempt, p.progress_percent
-        FROM events_scalar m JOIN events_job_in_progress p ON m.event_id = p.event_id
-      """
-        .query[(java.util.UUID, java.util.UUID, java.time.Instant, String, String, String, Int, Int)]
-        .stream
-        .transact(xa)
-        .map { case (eventId, jobId, occurredAt, source, level, workerId, attempt, progressPercent) =>
-          Event(eventId, jobId, Event.JobInProgressType, occurredAt, source, level, EventBody.JobInProgress(workerId, attempt, progressPercent))
-        }
-
-    val success: Stream[IO, Event] =
-      sql"""
-        SELECT m.event_id, m.job_id, m.occurred_at, m.source, m.level, s.duration_ms, s.result_summary, s.output_size_bytes
-        FROM events_scalar m JOIN events_job_success s ON m.event_id = s.event_id
-      """
-        .query[(java.util.UUID, java.util.UUID, java.time.Instant, String, String, Long, String, Long)]
-        .stream
-        .transact(xa)
-        .map { case (eventId, jobId, occurredAt, source, level, durationMs, resultSummary, outputSizeBytes) =>
-          Event(eventId, jobId, Event.JobSuccessType, occurredAt, source, level, EventBody.JobSuccess(durationMs, resultSummary, outputSizeBytes))
-        }
-
-    val failed: Stream[IO, Event] =
-      sql"""
-        SELECT m.event_id, m.job_id, m.occurred_at, m.source, m.level, f.attempt, f.error_message, f.stack_trace
-        FROM events_scalar m JOIN events_job_failed f ON m.event_id = f.event_id
-      """
-        .query[(java.util.UUID, java.util.UUID, java.time.Instant, String, String, Int, String, String)]
-        .stream
-        .transact(xa)
-        .map { case (eventId, jobId, occurredAt, source, level, attempt, errorMessage, stackTrace) =>
-          Event(eventId, jobId, Event.JobFailedType, occurredAt, source, level, EventBody.JobFailed(attempt, errorMessage, stackTrace))
-        }
-
-    val enabledStreams: List[Stream[IO, Event]] =
-      (if (config.enableJobCreated) List(created) else Nil) ++
-        (if (config.enableJobInProgress) List(inProgress) else Nil) ++
-        (if (config.enableJobSuccess) List(success) else Nil) ++
-        (if (config.enableJobFailed) List(failed) else Nil)
-
-    val empty: Stream[IO, Event] = Stream.empty
-    enabledStreams.foldLeft(empty)(_ ++ _)
-  }
+    }
 }
