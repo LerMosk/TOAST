@@ -6,9 +6,10 @@ import fs2.Stream
 import org.typelevel.doobie._
 import org.typelevel.doobie.implicits._
 import org.typelevel.doobie.postgres.implicits._
+import toast.db.EventRepo
 import toast.wide.model.{Event, EventBody}
 
-final class ScalarEventRepo(xa: Transactor[IO]) extends EventRepo {
+final class ScalarEventRepo(xa: Transactor[IO]) extends EventRepo[Event] {
 
   private val batchSize = 10000
 

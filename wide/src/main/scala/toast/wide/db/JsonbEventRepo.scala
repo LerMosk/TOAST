@@ -6,11 +6,12 @@ import org.typelevel.doobie._
 import org.typelevel.doobie.implicits._
 import org.typelevel.doobie.postgres.implicits._
 import org.typelevel.doobie.postgres.circe.jsonb.implicits._
+import toast.db.EventRepo
 import toast.wide.model.{Event, EventBody}
 
 // Parameterized by table name so the same repo can target both wide_events_jsonb (default
 // EXTENDED storage, compressed) and wide_events_jsonb_external (STORAGE EXTERNAL, uncompressed).
-final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo {
+final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo[Event] {
 
   private val batchSize = 10000
 

@@ -2,7 +2,7 @@ package toast.wide
 
 import cats.effect.{ExitCode, IO, IOApp}
 import fs2.Stream
-import toast.wide.bench.Benchmark
+import toast.bench.Benchmark
 import toast.wide.db.{Db, JsonbEventRepo, ScalarEventRepo}
 import toast.wide.generator.EventGenerator
 
@@ -27,10 +27,9 @@ object Main extends IOApp {
         _ <- IO.println("Recreating schema...")
         _ <- Db.recreateSchema(xa)
         _ <- Benchmark.insertBenchmarkReport(repos, Stream.emits(events).covary[IO], n.toLong)
-        _ <- IO.println("Analyzing tables...")
+       // _ <- IO.println("Analyzing tables...")
         _ <- Db.analyze(xa)
-        _ <- Benchmark.sanityCheck(repos, events)
-        _ <- Benchmark.sizeReport(xa)
+        _ <- Benchmark.sizeReport(xa, Db.scalarTables, Db.jsonbTables)
         _ <- Benchmark.readBenchmarkReport(repos, n.toLong)
       } yield ExitCode.Success
     }

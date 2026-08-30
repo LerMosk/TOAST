@@ -9,7 +9,7 @@ import org.typelevel.doobie.postgres.implicits._
 import toast.config.Config
 import toast.model.{Event, EventBody, Param}
 
-final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRepo {
+final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRepo[Event] {
 
   private val batchSize = 10000
 

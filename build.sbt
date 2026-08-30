@@ -20,9 +20,16 @@ val commonSettings = Seq(
   )
 )
 
+lazy val common = (project in file("common"))
+  .settings(commonSettings)
+  .settings(
+    name := "toast-common"
+  )
+
 // First benchmark: scalar (class-table-inheritance) vs JSONB for an ADT whose variable
 // data lives in a collection (events_job_created_params).
 lazy val core = (project in file("core"))
+  .dependsOn(common)
   .settings(commonSettings)
   .settings(
     name := "toast-core",
@@ -32,9 +39,10 @@ lazy val core = (project in file("core"))
 // Second benchmark: same idea, but for a "wide row" ADT (many flat fields, no Param) —
 // fully independent of `core`, its own package (toast.wide) and its own wide_-prefixed tables.
 lazy val wide = (project in file("wide"))
+  .dependsOn(common)
   .settings(commonSettings)
   .settings(name := "toast-wide")
 
 lazy val root = (project in file("."))
-  .aggregate(core, wide)
+  .aggregate(common, core, wide)
   .settings(name := "TOAST")

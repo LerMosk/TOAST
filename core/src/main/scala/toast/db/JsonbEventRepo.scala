@@ -10,7 +10,7 @@ import toast.model.{Event, EventBody}
 
 // Parameterized by table name so the same repo can target both events_jsonb (default
 // EXTENDED storage, compressed) and events_jsonb_external (STORAGE EXTERNAL, uncompressed).
-final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo {
+final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo[Event] {
 
   private val batchSize = 10000
 

@@ -7,6 +7,9 @@ services:
       POSTGRES_USER: toast
       POSTGRES_PASSWORD: toast
       POSTGRES_DB: toast
+    mem_limit: 800m
+    memswap_limit: 800m
+    shm_size: 128mb
     ports:
       - "5432:5432"
     volumes:

@@ -19,6 +19,7 @@ object Db {
 
   val jsonbTable: String = "wide_events_jsonb"
   val jsonbExternalTable: String = "wide_events_jsonb_external"
+  val jsonbTables: List[String] = List(jsonbTable, jsonbExternalTable)
 
   def transactor: Resource[IO, HikariTransactor[IO]] =
     HikariTransactor.newHikariTransactor[IO](

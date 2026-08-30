@@ -22,6 +22,7 @@ final class Db(config: Config) {
       (if (config.enableJobFailed) List("events_job_failed") else Nil)
 
   val scalarTables: List[String] = mainTable :: scalarChildTables
+  val jsonbTables: List[String] = List(jsonbTable, jsonbExternalTable)
 
   def transactor: Resource[IO, HikariTransactor[IO]] =
     HikariTransactor.newHikariTransactor[IO](

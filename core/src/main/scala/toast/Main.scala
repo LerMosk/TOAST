@@ -30,10 +30,9 @@ object Main extends IOApp {
         _ <- IO.println("Recreating schema...")
         _ <- db.recreateSchema(xa)
         _ <- Benchmark.insertBenchmarkReport(repos, Stream.emits(events).covary[IO], config.generateEvents.toLong)
-        _ <- IO.println("Analyzing tables...")
+      //  _ <- IO.println("Analyzing tables...")
         _ <- db.analyze(xa)
-        _ <- Benchmark.sanityCheck(repos, events)
-        _ <- Benchmark.sizeReport(xa, db)
+        _ <- Benchmark.sizeReport(xa, db.scalarTables, db.jsonbTables)
         _ <- Benchmark.readBenchmarkReport(repos, config.generateEvents.toLong)
       } yield ExitCode.Success
     }

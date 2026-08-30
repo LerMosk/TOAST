@@ -1,13 +1,17 @@
 # Доклад тост за toast 
 ## Про TOAST
-> Слайд 1
+> Слайд 2
 
 __TOAST (The Oversized-Attribute Storage Technique)__ — это механизм PostgreSQL для хранения больших значений полей, которые не помещаются в одну страницу данных.
 Зачем нужен TOAST
-PostgreSQL использует страницы фиксированного размера (по умолчанию 8 КБ). Одна строка (кортеж) не может занимать несколько страниц + PostgreSQL стремится к тому, чтобы на странице помещалось хотя бы 4 строки. TOAST решает эту проблему: большие значения (например, длинный text, jsonb, bytea, массивы и т.п.) сжимаются и/или делятся на чанки по 2 КБ и выносятся в специальную TOAST-таблицу.
+PostgreSQL использует страницы фиксированного размера (по умолчанию 8 КБ). Одна строка (кортеж) не может занимать несколько страниц + PostgreSQL стремится к тому, чтобы на странице помещалось хотя бы 4 строки. 
+
+> Слайд 3
+
+TOAST решает эту проблему: большие значения (например, длинный text, jsonb, bytea, массивы и т.п.) сжимаются и/или делятся на чанки по 2 КБ и выносятся в специальную TOAST-таблицу.
 
 ### Стратегии хранения
-> Слайд 2
+> Слайд 4
 
 - plain — TOAST не используется (применяется для заведомо “коротких” типов данных, как integer);
 - extended — допускается как сжатие, так и хранение в отдельной TOAST-таблице;
@@ -20,7 +24,7 @@ ALTER TABLE table ALTER COLUMN column SET STORAGE { PLAIN | EXTERNAL | EXTENDED 
 ```
 
 ### Алгоритм
-> Слайд 3
+> Слайд 5
 
 Алгоритм выполняется до тех пор, пока строка не перестанет превышать порог:
 1. Сначала перебираем атрибуты со стратегиями external и extended, двигаясь от самых длинных к более коротким. Extended-атрибуты сжимаются (если это дает эффект) и, если значение само по себе превосходит четверть страницы, оно сразу же отправляется в TOAST-таблицу. External-атрибуты обрабатываются так же, но не сжимаются.
@@ -29,7 +33,7 @@ ALTER TABLE table ALTER COLUMN column SET STORAGE { PLAIN | EXTERNAL | EXTENDED 
 4. main-атрибуты отправляются в TOAST-таблицу.
 
 ### TOAST таблица
-> Слайд 4: картинка с визуализацией
+> Слайд 6
 
 - Для каждой основной таблицы при необходимости создается отдельная, но одна для всех атрибутов, TOAST-таблица (pg_toast_<oid_основной_таблицы>).
 
@@ -44,12 +48,12 @@ ALTER TABLE table ALTER COLUMN column SET STORAGE { PLAIN | EXTERNAL | EXTENDED 
 - В основной таблице вместо большого значения остаётся маленький TOAST-указатель (pointer), который содержит ссылку на данные в TOAST-таблице + служебную информацию (длины, флаги сжатия и т.д.).
 
 ## Предыстория
-> Слайд 5
+> Слайд 7
 
 Мы используем увесиситые jsonb поля, чтение стало тормозить, DBA указали на jsonb и TOAST, что они могут быть причиной и предложили разложить на скаляры. Стало интересно как TOAST вляет на перфоманс и правда ли во всех случаях стоит опасаться TOAST
 
 ## Решила исследовать 
-> Слайд 6
+> Слайд 8
 
 Генерировала данные и раскладывала в бд в 3 схемы: с jsonb extended, jsonb external, скаляры
 Сравнивала время вставки, чтения и объем получившихся данных
@@ -120,21 +124,21 @@ sealed trait EventBody
 ```
 
 ```
-=== Insert (create) benchmark (n=100000) ===
-scalar (3 tables)          1833 ms
-events_jsonb (extended)    1005 ms
-events_jsonb (external)     889 ms
+=== Insert (create) benchmark (n=500000) ===
+scalar (3 tables)          8575 ms
+events_jsonb (extended)    4536 ms
+events_jsonb (external)    4694 ms
 === Storage size ===
-events_scalar             heap:    10,20 MB   toast:     0,01 MB   total:    14,44 MB
-events_job_in_progress    heap:     3,56 MB   toast:     0,01 MB   total:     5,84 MB
-events_job_success        heap:     3,66 MB   toast:     0,01 MB   total:     5,59 MB
-scalar total              heap:    17,42 MB   toast:     0,02 MB   total:    25,87 MB
-events_jsonb              heap:    22,28 MB   toast:     0,01 MB   total:    26,52 MB
-events_jsonb_external     heap:    22,28 MB   toast:     0,01 MB   total:    26,52 MB
-=== Full table read benchmark (n=100000, median of 5 runs) ===
-scalar (3 tables)           209 ms
-events_jsonb (extended)     276 ms
-events_jsonb (external)     276 ms
+events_scalar                heap:    50,97 MB   toast:     0,01 MB   total:    69,82 MB
+events_job_in_progress       heap:    17,77 MB   toast:     0,01 MB   total:    27,78 MB
+events_job_success           heap:    18,29 MB   toast:     0,01 MB   total:    27,34 MB
+scalar total                 heap:    87,03 MB   toast:     0,02 MB   total:   124,95 MB
+events_jsonb                 heap:   111,39 MB   toast:     0,01 MB   total:   130,26 MB
+events_jsonb_external        heap:   111,39 MB   toast:     0,01 MB   total:   130,26 MB
+=== Full table read benchmark (n=500000, avg of 5 runs) ===
+events_jsonb (extended)    1265 ms
+events_jsonb (external)    1307 ms
+scalar (3 tables)          2934 ms
 ```
 
 #### EventBody: JobInProgress, JobSuccess, JobFailed
@@ -157,22 +161,22 @@ events_jsonb (external)     276 ms
 ```
 
 ```
-=== Insert (create) benchmark (n=100000) ===
-scalar (4 tables)          2881 ms
-events_jsonb (extended)    2457 ms
-events_jsonb (external)    2218 ms
+=== Insert (create) benchmark (n=200000) ===
+scalar (4 tables)          5503 ms
+events_jsonb (extended)    5164 ms
+events_jsonb (external)   11077 ms
 === Storage size ===
-events_scalar             heap:    10,20 MB   toast:     0,01 MB   total:    14,51 MB
-events_job_in_progress    heap:     2,80 MB   toast:     0,01 MB   total:     4,59 MB
-events_job_success        heap:     2,89 MB   toast:     0,01 MB   total:     4,21 MB
-events_job_failed         heap:    24,77 MB   toast:     7,95 MB   total:    33,61 MB
-scalar total              heap:    40,66 MB   toast:     7,97 MB   total:    56,91 MB
-events_jsonb              heap:    40,54 MB   toast:    13,38 MB   total:    58,22 MB
-events_jsonb_external     heap:    20,02 MB   toast:   158,34 MB   total:   182,66 MB
-=== Full table read benchmark (n=100000, median of 5 runs) ===
-scalar (4 tables)           491 ms
-events_jsonb (extended)    1037 ms
-events_jsonb (external)    1053 ms
+events_scalar                heap:    20,39 MB   toast:     0,01 MB   total:    28,74 MB
+events_job_in_progress       heap:     5,58 MB   toast:     0,01 MB   total:     9,08 MB
+events_job_success           heap:     5,77 MB   toast:     0,01 MB   total:     8,40 MB
+events_job_failed            heap:    49,85 MB   toast:    15,88 MB   total:    67,51 MB
+scalar total                 heap:    81,59 MB   toast:    15,91 MB   total:   113,73 MB
+events_jsonb                 heap:    81,27 MB   toast:    26,93 MB   total:   116,56 MB
+events_jsonb_external        heap:    40,03 MB   toast:   318,91 MB   total:   367,30 MB
+=== Full table read benchmark (n=200000, avg of 5 runs) ===
+events_jsonb (extended)    3001 ms
+events_jsonb (external)    2322 ms
+scalar (4 tables)          1261 ms
 ```
 
 #### EventBody: JobInProgress, JobSuccess, JobFailed, JobCreated (max params 100)
@@ -205,46 +209,46 @@ events_jsonb (external)    1053 ms
 
 ```
 === Insert (create) benchmark (n=100000) ===
-scalar (6 tables)         15982 ms
-events_jsonb (extended)    7238 ms
-events_jsonb (external)    5661 ms
+scalar (6 tables)         16853 ms
+events_jsonb (extended)    6646 ms
+events_jsonb (external)    4652 ms
 === Storage size ===
-events_scalar             heap:    10,20 MB   toast:     0,01 MB   total:    14,45 MB
-events_job_created        heap:     2,02 MB   toast:     0,01 MB   total:     3,22 MB
-events_job_created_params heap:   232,31 MB   toast:     0,01 MB   total:   313,52 MB
-events_job_in_progress    heap:     1,95 MB   toast:     0,01 MB   total:     3,16 MB
-events_job_success        heap:     2,02 MB   toast:     0,01 MB   total:     3,13 MB
-events_job_failed         heap:    17,47 MB   toast:     5,52 MB   total:    23,59 MB
-scalar total              heap:   265,97 MB   toast:     5,55 MB   total:   361,07 MB
-events_jsonb              heap:    35,51 MB   toast:   234,33 MB   total:   274,09 MB
-events_jsonb_external     heap:    21,05 MB   toast:   336,42 MB   total:   361,72 MB
-=== Full table read benchmark (n=100000, median of 5 runs) ===
-scalar (6 tables)          2619 ms
-events_jsonb (extended)    2410 ms
-events_jsonb (external)    2302 ms
+events_scalar                heap:    10,20 MB   toast:     0,01 MB   total:    14,53 MB
+events_job_created           heap:     2,02 MB   toast:     0,01 MB   total:     3,18 MB
+events_job_created_params    heap:   232,31 MB   toast:     0,01 MB   total:   313,52 MB
+events_job_in_progress       heap:     1,95 MB   toast:     0,01 MB   total:     3,18 MB
+events_job_success           heap:     2,02 MB   toast:     0,01 MB   total:     3,10 MB
+events_job_failed            heap:    17,47 MB   toast:     5,52 MB   total:    23,61 MB
+scalar total                 heap:   265,97 MB   toast:     5,56 MB   total:   361,12 MB
+events_jsonb                 heap:    35,52 MB   toast:   234,34 MB   total:   274,20 MB
+events_jsonb_external        heap:    21,05 MB   toast:   336,42 MB   total:   361,80 MB
+=== Full table read benchmark (n=100000, avg of 5 runs) ===
+events_jsonb (extended)    2441 ms
+events_jsonb (external)    3168 ms
+scalar (6 tables)          2857 ms
 ```
 
 #### EventBody: JobInProgress, JobSuccess, JobFailed, JobCreated (max params 10000)
 > Слайд 10
 ```
 === Insert (create) benchmark (n=100) ===
-scalar (6 tables)         11876 ms
-events_jsonb (extended)    4455 ms
-events_jsonb (external)    2497 ms
+scalar (6 tables)         11844 ms
+events_jsonb (extended)    9997 ms
+events_jsonb (external)    2731 ms
 === Storage size ===
-events_scalar             heap:     0,02 MB   toast:     0,01 MB   total:     0,06 MB
-events_job_created        heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
-events_job_created_params heap:   216,70 MB   toast:     0,01 MB   total:   311,95 MB
-events_job_in_progress    heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
-events_job_success        heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
-events_job_failed         heap:     0,02 MB   toast:     0,02 MB   total:     0,09 MB
-scalar total              heap:   216,76 MB   toast:     0,06 MB   total:   312,20 MB
-events_jsonb              heap:     0,04 MB   toast:   197,89 MB   total:   197,97 MB
-events_jsonb_external     heap:     0,02 MB   toast:   198,00 MB   total:   198,06 MB
-=== Full table read benchmark (n=100, median of 5 runs) ===
-scalar (6 tables)          3076 ms
-events_jsonb (extended)    1026 ms
-events_jsonb (external)    1041 ms
+events_scalar                heap:     0,02 MB   toast:     0,01 MB   total:     0,06 MB
+events_job_created           heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
+events_job_created_params    heap:   216,70 MB   toast:     0,01 MB   total:   309,73 MB
+events_job_in_progress       heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
+events_job_success           heap:     0,01 MB   toast:     0,01 MB   total:     0,03 MB
+events_job_failed            heap:     0,02 MB   toast:     0,02 MB   total:     0,09 MB
+scalar total                 heap:   216,76 MB   toast:     0,06 MB   total:   309,97 MB
+events_jsonb                 heap:     0,04 MB   toast:   197,89 MB   total:   197,97 MB
+events_jsonb_external        heap:     0,02 MB   toast:   198,00 MB   total:   198,06 MB
+=== Full table read benchmark (n=100, avg of 5 runs) ===
+events_jsonb (extended)    1165 ms
+events_jsonb (external)    1081 ms
+scalar (6 tables)          5793 ms
 ```
 
 #### Для моделей EventBody с большим количеством параметров
@@ -272,21 +276,21 @@ events_jsonb (external)    1041 ms
 
 ```
 === Insert (create) benchmark (n=100000) ===
-scalar (4 tables)              6062 ms
-wide_events_jsonb (extended)   8632 ms
-wide_events_jsonb (external)   6496 ms
+scalar (4 tables)             10942 ms
+wide_events_jsonb (extended)  12376 ms
+wide_events_jsonb (external)  11436 ms
 === Storage size ===
-wide_events                  heap:    10,20 MB   toast:     0,01 MB   total:    14,46 MB
-wide_job_created             heap:    67,68 MB   toast:    21,39 MB   total:    90,29 MB
-wide_job_success             heap:    78,17 MB   toast:    25,05 MB   total:   104,80 MB
-wide_job_failed              heap:    49,47 MB   toast:    46,91 MB   total:    97,45 MB
-scalar total                 heap:   205,52 MB   toast:    93,35 MB   total:   307,01 MB
-wide_events_jsonb            heap:    12,02 MB   toast:   314,34 MB   total:   330,62 MB
-wide_events_jsonb_external   heap:    12,02 MB   toast:   453,23 MB   total:   469,51 MB
-=== Full table read benchmark (n=100000, median of 5 runs) ===
-scalar (4 tables)              1634 ms
-wide_events_jsonb (extended)   2837 ms
-wide_events_jsonb (external)   2680 ms
+wide_events                  heap:    10,20 MB   toast:     0,01 MB   total:    14,34 MB
+wide_job_created             heap:    67,68 MB   toast:    21,39 MB   total:    90,34 MB
+wide_job_success             heap:    78,17 MB   toast:    25,05 MB   total:   104,83 MB
+wide_job_failed              heap:    49,47 MB   toast:    46,91 MB   total:    97,48 MB
+scalar total                 heap:   205,52 MB   toast:    93,35 MB   total:   306,99 MB
+wide_events_jsonb            heap:    12,02 MB   toast:   314,34 MB   total:   330,49 MB
+wide_events_jsonb_external   heap:    12,02 MB   toast:   453,23 MB   total:   469,38 MB
+=== Full table read benchmark (n=100000, avg of 5 runs) ===
+wide_events_jsonb (external)   2804 ms
+wide_events_jsonb (extended)   2886 ms
+scalar (4 tables)              3552 ms
 ```
 
 ## Выводы
