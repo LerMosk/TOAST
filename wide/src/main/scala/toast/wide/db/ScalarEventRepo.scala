@@ -11,6 +11,8 @@ import toast.wide.model.{Event, EventBody}
 
 final class ScalarEventRepo(xa: Transactor[IO]) extends EventRepo[Event] {
 
+  private val batchSize = 10000
+
   private def attrCols(n: Int, prefix: String = ""): String = (1 to n).map(i => s"$prefix" + s"attr$i").mkString(", ")
   private def placeholders(n: Int): String = List.fill(n)("?").mkString(", ")
 
@@ -135,28 +137,26 @@ final class ScalarEventRepo(xa: Transactor[IO]) extends EventRepo[Event] {
       s"INSERT INTO wide_job_failed (event_id, attempt, error_message, stack_trace, ${attrCols(21)}) VALUES (${placeholders(4 + 21)})"
     )
 
-  // Each event is one ConnectionIO program (main row + its variant row) run via a single
-  // .transact(xa) call, so one event = one DB transaction. wide_events must be populated
-  // before the child row (FK). No collection here (flat fields), so no batching needed
-  // within a single event's transaction.
-  private def insertOneEvent(e: Event): ConnectionIO[Unit] = {
-    val childInsert: ConnectionIO[Unit] = e.body match {
-      case b: EventBody.JobCreated => insertCreated.run(toCreatedRow(e.eventId, b)).void
-      case b: EventBody.JobSuccess => insertSuccess.run(toSuccessRow(e.eventId, b)).void
-      case b: EventBody.JobFailed  => insertFailed.run(toFailedRow(e.eventId, b)).void
-    }
+  private def insertBatch(events: List[Event]): IO[Unit] = {
+    val created = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobCreated) => toCreatedRow(e.eventId, b) }
+    val success = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobSuccess) => toSuccessRow(e.eventId, b) }
+    val failed = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobFailed) => toFailedRow(e.eventId, b) }
+
+    // wide_events must be populated before the child tables (FK). No row explosion here
+    // (flat fields, not a collection) so a single batch per table per chunk is enough.
     for {
-      _ <- insertMain.run(toMainRow(e))
-      _ <- childInsert
+      _ <- insertMain.updateMany(events.map(toMainRow)).transact(xa)
+      _ <- List(
+        insertCreated.updateMany(created),
+        insertSuccess.updateMany(success),
+        insertFailed.updateMany(failed)
+      ).traverse_(_.transact(xa))
     } yield ()
   }
 
   override def insertAll(events: Stream[IO, Event]): IO[Unit] =
-    events.evalMap(e => insertOneEvent(e).transact(xa)).compile.drain
+    events.chunkN(batchSize).evalMap(chunk => insertBatch(chunk.toList)).compile.drain
 
-  // Single query: wide_events LEFT JOINed with all three variant tables at once. Exactly
-  // one of the three column groups is populated per row (the other two come back NULL from
-  // their unmatched LEFT JOIN) — eventType says which one, so extracting via .get is safe.
   override def selectAll(): Stream[IO, Event] =
     Fragment
       .const(s"""

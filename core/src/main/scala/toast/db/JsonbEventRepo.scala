@@ -12,6 +12,8 @@ import toast.model.{Event, EventBody}
 // EXTENDED storage, compressed) and events_jsonb_external (STORAGE EXTERNAL, uncompressed).
 final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo[Event] {
 
+  private val batchSize = 10000
+
   private implicit val eventBodyGet: Get[EventBody] = pgDecoderGetT[EventBody]
   private implicit val eventBodyPut: Put[EventBody] = pgEncoderPutT[EventBody]
 
@@ -25,9 +27,8 @@ final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventR
       s"INSERT INTO $tableName (event_id, job_id, event_type, occurred_at, source, level, body) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
 
-  // One event = one row = one transaction.
   override def insertAll(events: Stream[IO, Event]): IO[Unit] =
-    events.evalMap(e => insert.run(toRow(e)).transact(xa).void).compile.drain
+    events.chunkN(batchSize).evalMap(chunk => insert.updateMany(chunk.toList.map(toRow)).transact(xa).void).compile.drain
 
   override def selectAll(): Stream[IO, Event] =
     Fragment

@@ -11,6 +11,8 @@ import toast.model.{Event, EventBody, Param}
 
 final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRepo[Event] {
 
+  private val batchSize = 5000
+
   private type MainRow = (java.util.UUID, java.util.UUID, String, java.time.Instant, String, String)
   private type CreatedRow = (java.util.UUID, Int, String, String)
   private type CreatedParamsRow = (java.util.UUID, Int, String, String)
@@ -18,10 +20,6 @@ final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRep
   private type SuccessRow = (java.util.UUID, Long, String, Long)
   private type FailedRow = (java.util.UUID, Int, String, String)
 
-  // One row per event covering all four variants at once (main LEFT JOINed with every
-  // variant table): exactly one column group is non-NULL per row, determined by eventType.
-  // params is deliberately not part of this row — it's one-to-many, so it's fetched by a
-  // separate query and merged onto JobCreated events in Scala (see selectAll).
   private final case class AllRow(
       eventId: java.util.UUID, jobId: java.util.UUID, eventType: String, occurredAt: java.time.Instant,
       source: String, level: String,
@@ -79,42 +77,27 @@ final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRep
       "INSERT INTO events_job_failed (event_id, attempt, error_message, stack_trace) VALUES (?, ?, ?, ?)"
     )
 
-  // Disabled variants have no table at all, so their Update/Query must never even be
-  // attempted (a PreparedStatement against a nonexistent table fails at prepare time) —
-  // every variant is gated by its config flag below.
-  //
-  // Each event is one ConnectionIO program (main row + its variant row, and for JobCreated
-  // its whole params list as a single batch) run via a single .transact(xa) call, so one
-  // event = one DB transaction. events_scalar must be populated before the child row (FK).
-  private def insertOneEvent(e: Event): ConnectionIO[Unit] = {
-    val childInsert: ConnectionIO[Unit] = e.body match {
-      case b: EventBody.JobCreated if config.enableJobCreated =>
-        val params = toCreatedParamsRows(e, b)
-        for {
-          _ <- insertCreated.run(toCreatedRow(e, b))
-          _ <- if (params.nonEmpty) insertCreatedParams.updateMany(params).void else ().pure[ConnectionIO]
-        } yield ()
-      case b: EventBody.JobInProgress if config.enableJobInProgress =>
-        insertInProgress.run(toInProgressRow(e, b)).void
-      case b: EventBody.JobSuccess if config.enableJobSuccess =>
-        insertSuccess.run(toSuccessRow(e, b)).void
-      case b: EventBody.JobFailed if config.enableJobFailed =>
-        insertFailed.run(toFailedRow(e, b)).void
-      case _ =>
-        ().pure[ConnectionIO]
-    }
-    for {
-      _ <- insertMain.run(toMainRow(e))
-      _ <- childInsert
-    } yield ()
+  private def insertBatch(events: List[Event]): IO[Unit] = {
+    val createdEvents = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobCreated) => (e, b) }
+    val created = createdEvents.map { case (e, b) => toCreatedRow(e, b) }
+    val createdParams = createdEvents.flatMap { case (e, b) => toCreatedParamsRows(e, b) }
+    val inProgress = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobInProgress) => toInProgressRow(e, b) }
+    val success = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobSuccess) => toSuccessRow(e, b) }
+    val failed = events.collect { case e @ Event(_, _, _, _, _, _, b: EventBody.JobFailed) => toFailedRow(e, b) }
+
+    val childInserts: List[ConnectionIO[Int]] =
+      (if (config.enableJobCreated) List(insertCreated.updateMany(created) *> insertCreatedParams.updateMany(createdParams)) else Nil) ++
+        (if (config.enableJobInProgress) List(insertInProgress.updateMany(inProgress)) else Nil) ++
+        (if (config.enableJobSuccess) List(insertSuccess.updateMany(success)) else Nil) ++
+        (if (config.enableJobFailed) List(insertFailed.updateMany(failed)) else Nil)
+
+    (insertMain.updateMany(events.map(toMainRow)) *> childInserts.sequence.void).transact(xa)
   }
 
   override def insertAll(events: Stream[IO, Event]): IO[Unit] =
-    events.evalMap(e => insertOneEvent(e).transact(xa)).compile.drain
+    events.chunkN(batchSize).evalMap(chunk => insertBatch(chunk.toList)).compile.drain
 
-  // params is one-to-many, so it can't sit in the one-row-per-event AllRow query below
-  // without multiplying rows per event; instead it's loaded once here as event_id -> params
-  // and merged onto JobCreated events in Scala, in selectAll.
+
   private def loadCreatedParams(): IO[Map[java.util.UUID, List[Param]]] =
     if (!config.enableJobCreated) IO.pure(Map.empty)
     else
@@ -128,9 +111,6 @@ final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRep
         .transact(xa)
         .map(_.groupBy(_._1).view.mapValues(_.map { case (_, _, name, value) => Param(name, value) }.toList).toMap)
 
-  // Disabled variants have no table at all, so a LEFT JOIN against one would fail to even
-  // prepare; instead disabled variants are stubbed as typed NULL literals in the SELECT
-  // list, so the query always returns the same fixed AllRow shape regardless of config.
   override def selectAll(): Stream[IO, Event] =
     Stream.eval(loadCreatedParams()).flatMap { paramsByEvent =>
       val createdJoin = if (config.enableJobCreated) "LEFT JOIN events_job_created c ON m.event_id = c.event_id" else ""
