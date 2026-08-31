@@ -8,11 +8,7 @@ import org.typelevel.doobie.postgres.implicits._
 import org.typelevel.doobie.postgres.circe.jsonb.implicits._
 import toast.model.{Event, EventBody}
 
-// Parameterized by table name so the same repo can target both events_jsonb (default
-// EXTENDED storage, compressed) and events_jsonb_external (STORAGE EXTERNAL, uncompressed).
-final class JsonbEventRepo(xa: Transactor[IO], tableName: String) extends EventRepo[Event] {
-
-  private val batchSize = 10000
+final class JsonbEventRepo(xa: Transactor[IO], tableName: String, batchSize: Int) extends EventRepo[Event] {
 
   private implicit val eventBodyGet: Get[EventBody] = pgDecoderGetT[EventBody]
   private implicit val eventBodyPut: Put[EventBody] = pgEncoderPutT[EventBody]

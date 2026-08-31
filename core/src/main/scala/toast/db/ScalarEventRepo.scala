@@ -9,10 +9,7 @@ import org.typelevel.doobie.postgres.implicits._
 import toast.config.Config
 import toast.model.{Event, EventBody, Param}
 
-final class ScalarEventRepo(xa: Transactor[IO], config: Config) extends EventRepo[Event] {
-
-  private val batchSize = 5000
-
+final class ScalarEventRepo(xa: Transactor[IO], config: Config, batchSize: Int) extends EventRepo[Event] {
   private type MainRow = (java.util.UUID, java.util.UUID, String, java.time.Instant, String, String)
   private type CreatedRow = (java.util.UUID, Int, String, String)
   private type CreatedParamsRow = (java.util.UUID, Int, String, String)

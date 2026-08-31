@@ -125,9 +125,9 @@ sealed trait EventBody
 
 ```
 === Insert (create) benchmark (n=500000) ===
-scalar (3 tables)         12423 ms
-events_jsonb (extended)    4472 ms
-events_jsonb (external)    9064 ms
+scalar (3 tables)          8546 ms
+events_jsonb (extended)    4890 ms
+events_jsonb (external)    4198 ms
 === Storage size ===
 events_scalar                heap:    50,97 MB   toast:     0,01 MB   total:    70,20 MB
 events_job_in_progress       heap:    17,77 MB   toast:     0,01 MB   total:    28,40 MB
@@ -162,9 +162,9 @@ scalar (3 tables)          2227 ms
 
 ```
 === Insert (create) benchmark (n=200000) ===
-scalar (4 tables)          5532 ms
-events_jsonb (extended)    5172 ms
-events_jsonb (external)    9810 ms
+scalar (4 tables)          5901 ms
+events_jsonb (extended)    6949 ms
+events_jsonb (external)    5076 ms
 === Storage size ===
 events_scalar                heap:    20,39 MB   toast:     0,01 MB   total:    28,73 MB
 events_job_in_progress       heap:     5,58 MB   toast:     0,01 MB   total:     9,04 MB

@@ -7,3 +7,7 @@ trait EventRepo[Event] {
   def insertAll(events: Stream[IO, Event]): IO[Unit]
   def selectAll(): Stream[IO, Event]
 }
+
+object EventRepo {
+  val BatchSize: Int = 5000
+}

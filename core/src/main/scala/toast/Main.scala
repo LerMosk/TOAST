@@ -4,7 +4,7 @@ import cats.effect.{ExitCode, IO, IOApp}
 import fs2.Stream
 import toast.bench.Benchmark
 import toast.config.Config
-import toast.db.{Db, JsonbEventRepo, ScalarEventRepo}
+import toast.db.{Db, EventRepo, JsonbEventRepo, ScalarEventRepo}
 import toast.generator.EventGenerator
 
 object Main extends IOApp {
@@ -14,9 +14,9 @@ object Main extends IOApp {
     val db = new Db(config)
 
     db.transactor.use { xa =>
-      val scalarRepo = new ScalarEventRepo(xa, config)
-      val jsonbRepo = new JsonbEventRepo(xa, db.jsonbTable)
-      val jsonbExternalRepo = new JsonbEventRepo(xa, db.jsonbExternalTable)
+      val scalarRepo = new ScalarEventRepo(xa, config, EventRepo.BatchSize)
+      val jsonbRepo = new JsonbEventRepo(xa, db.jsonbTable, EventRepo.BatchSize)
+      val jsonbExternalRepo = new JsonbEventRepo(xa, db.jsonbExternalTable, EventRepo.BatchSize)
       val repos = List(
         s"scalar (${db.scalarTables.size} tables)" -> scalarRepo,
         "events_jsonb (extended)" -> jsonbRepo,
