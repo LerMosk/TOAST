@@ -3,6 +3,7 @@ package toast.wide
 import cats.effect.{ExitCode, IO, IOApp}
 import fs2.Stream
 import toast.bench.Benchmark
+import toast.db.EventRepo
 import toast.wide.db.{Db, JsonbEventRepo, ScalarEventRepo}
 import toast.wide.generator.EventGenerator
 
@@ -12,9 +13,9 @@ object Main extends IOApp {
     val n = args.headOption.flatMap(_.toIntOption).getOrElse(100000)
 
     Db.transactor.use { xa =>
-      val scalarRepo = new ScalarEventRepo(xa)
-      val jsonbRepo = new JsonbEventRepo(xa, Db.jsonbTable)
-      val jsonbExternalRepo = new JsonbEventRepo(xa, Db.jsonbExternalTable)
+      val scalarRepo = new ScalarEventRepo(xa, EventRepo.BatchSize)
+      val jsonbRepo = new JsonbEventRepo(xa, Db.jsonbTable, EventRepo.BatchSize)
+      val jsonbExternalRepo = new JsonbEventRepo(xa, Db.jsonbExternalTable, EventRepo.BatchSize)
       val repos = List(
         s"scalar (${Db.scalarTables.size} tables)" -> scalarRepo,
         "wide_events_jsonb (extended)" -> jsonbRepo,

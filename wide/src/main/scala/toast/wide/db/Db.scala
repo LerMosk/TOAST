@@ -13,7 +13,7 @@ object Db {
   val mainTable: String = "wide_events"
 
   val scalarChildTables: List[String] =
-    List("wide_job_created", "wide_job_success", "wide_job_failed")
+    List("wide_job_created", "wide_job_success")
 
   val scalarTables: List[String] = mainTable :: scalarChildTables
 
@@ -37,7 +37,6 @@ object Db {
     // Children first: they hold a FK into wide_events, so must be dropped before it.
     sql"DROP TABLE IF EXISTS wide_job_created",
     sql"DROP TABLE IF EXISTS wide_job_success",
-    sql"DROP TABLE IF EXISTS wide_job_failed",
     sql"DROP TABLE IF EXISTS wide_events",
     sql"DROP TABLE IF EXISTS wide_events_jsonb",
     sql"DROP TABLE IF EXISTS wide_events_jsonb_external",
@@ -67,15 +66,6 @@ object Db {
         result_summary     TEXT NOT NULL,
         output_size_bytes  BIGINT NOT NULL,
         ${attrColumnsDdl(22)}
-      )
-    """),
-    Fragment.const(s"""
-      CREATE TABLE wide_job_failed (
-        event_id       UUID PRIMARY KEY REFERENCES wide_events (event_id),
-        attempt        INT NOT NULL,
-        error_message  TEXT NOT NULL,
-        stack_trace    TEXT NOT NULL,
-        ${attrColumnsDdl(21)}
       )
     """),
     sql"""
