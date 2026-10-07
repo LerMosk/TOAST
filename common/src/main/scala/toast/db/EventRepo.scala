@@ -6,6 +6,8 @@ import fs2.Stream
 trait EventRepo[Event] {
   def insertAll(events: Stream[IO, Event]): IO[Unit]
   def selectAll(): Stream[IO, Event]
+  def truncate(): IO[Unit]
+  def analyse(): IO[Unit]
 }
 
 object EventRepo {

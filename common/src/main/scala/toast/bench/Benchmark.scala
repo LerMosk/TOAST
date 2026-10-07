@@ -1,80 +1,76 @@
 package toast.bench
 
+import cats.Monoid
 import cats.effect.IO
 import cats.syntax.all._
 import fs2.Stream
-import org.typelevel.doobie._
-import org.typelevel.doobie.implicits._
 import toast.db.EventRepo
 
-object Benchmark {
+import scala.concurrent.duration.FiniteDuration
 
-  final case class TableSize(name: String, heapBytes: Long, toastBytes: Long, totalBytes: Long)
-  object TableSize {
-    def sum(name: String, ts: List[TableSize]): TableSize = {
-      val (heapBytes, toastBytes, totalBytes) = ts.foldMap(ts => (ts.heapBytes, ts.toastBytes, ts.totalBytes))
-      TableSize(name, heapBytes, toastBytes, totalBytes)
+object Benchmark {
+  private case class Results(writes: Map[String, Vector[FiniteDuration]], reads: Map[String, Vector[FiniteDuration]]) {
+    def addWrite(label: String, result: FiniteDuration): Results =
+      Results(add(label, result, writes), reads)
+
+    def addRead(label: String, result: FiniteDuration): Results =
+      Results(writes, add(label, result, reads))
+
+    def print(labels: List[String]): IO[Unit] = {
+      IO.println(s"=== Insert (create) benchmark ===") *>
+        print(labels, writes) *>
+        IO.println(s"=== Full table read benchmark ===") *>
+        print(labels, reads)
     }
+
+
+    private def print(labels: List[String], results: Map[String, Vector[FiniteDuration]]): IO[Unit] =
+      labels.traverse_ { label =>
+        val timings = results(label)
+        val ms = timings.map(_.toMillis).sum/timings.size
+        IO.println(f"$label%-24s $ms%6d ms")
+      }
+
+
+    private def add(label: String, result: FiniteDuration, results: Map[String, Vector[FiniteDuration]]): Map[String, Vector[FiniteDuration]] =
+      results.updatedWith(label)(_.map(_ :+ result).getOrElse(Vector(result)).some)
+  }
+  private object Results {
+    implicit val monoid: Monoid[Results] = new Monoid[Results]{
+      def empty: Results = Empty
+
+      def combine(x: Results, y: Results): Results= Results(x.writes |+| y.writes, x.reads |+| y.reads)
+    }
+    val Empty: Results = Results(Map.empty, Map.empty)
+
+    def fromWrite(label:String, result: FiniteDuration): Results =
+      Results(Map(label -> Vector(result)), Map.empty)
   }
 
-  def sizeReport(xa: Transactor[IO], scalarTables: List[String], jsonbTables: List[String]): IO[Unit] =
-    for {
-      scalarSizes <- scalarTables.traverse(tableSize(xa, _))
-      jsonbSizes <- jsonbTables.traverse(tableSize(xa, _))
-      _ <- IO.println("=== Storage size ===")
-      _ <- scalarSizes.traverse_(printSize)
-      _ <- printSize(TableSize.sum("scalar total", scalarSizes))
-      _ <- jsonbSizes.traverse_(printSize)
-    } yield ()
-
-  private def bytesToMb(bytes: Long): Double = bytes / (1024.0 * 1024.0)
-
-  private def tableSize(xa: Transactor[IO], table: String): IO[TableSize] =
-    sql"""
-      SELECT pg_relation_size(c.oid),
-             COALESCE(pg_total_relation_size(c.reltoastrelid), 0),
-             pg_total_relation_size(c.oid)
-      FROM pg_class c
-      WHERE c.relname = $table
-    """.query[(Long, Long, Long)].unique.transact(xa).map { case (heap, toast, total) =>
-      TableSize(table, heap, toast, total)
-    }
-
-  private def printSize(ts: TableSize): IO[Unit] =
-    IO.println(
-      f"${ts.name}%-28s heap: ${bytesToMb(ts.heapBytes)}%8.2f MB   " +
-        f"toast: ${bytesToMb(ts.toastBytes)}%8.2f MB   " +
-        f"total: ${bytesToMb(ts.totalBytes)}%8.2f MB"
-    )
-
-  def insertBenchmarkReport[Event](
-      repos: List[(String, EventRepo[Event])],
-      events: Stream[IO, Event],
-      expectedCount: Long
-  ): IO[Unit] =
-    IO.println(s"=== Insert (create) benchmark (n=$expectedCount) ===") *>
-      repos.traverse_ { case (label, repo) =>
-        //IO.println(s"Inserting into $label...") *>
-          repo.insertAll(events).timed.flatMap {case (d, _) =>
-            IO.println(f"$label%-24s ${d.toMillis}%6d ms")}
+  def benchmark[Event](
+                        repos: List[(String, EventRepo[Event])],
+                        events: List[Event],
+                        runs: Int = 5
+                      ): IO[Unit] = {
+    IO.println(s"=== Full table write/read benchmark (n=${events.size}, avg of $runs runs) ===") *>
+    List.range(0, runs).foldMapM{_ =>
+      repos.foldMapM { case (label, repo) =>
+        repo.truncate() *>
+        IO.println(s"Inserting $label") *>
+        repo.insertAll(Stream.emits(events).covary[IO]).timed.map { case (d, _) =>
+          Results.fromWrite(label, d)
+        } <* repo.analyse()
+      }.flatMap { results =>
+        repos.foldM(results) { case (acc, (label, repo)) =>
+          IO.println(s"Selecting $label") *>
+          repo.selectAll().compile.count.timed
+            .flatMap { case (d, count) =>
+              IO.raiseUnless(count == events.size)(
+                new RuntimeException(s"$label read count mismatch: expected ${events.size}, got $count")
+              ).as(acc.addRead(label, d))
+            }
+        }
       }
-
-  def readBenchmarkReport[Event](repos: List[(String, EventRepo[Event])], expectedCount: Long, runs: Int = 5): IO[Unit] = {
-    List.fill(runs) {
-      repos.traverse { case (label, repo) =>
-        repo.selectAll().compile.count.timed
-          .flatMap { case (d, count) =>
-            IO.raiseUnless(count == expectedCount)(
-              new RuntimeException(s"$label read count mismatch: expected $expectedCount, got $count")
-            ).as(label -> d)
-          }
-      }
-    }.flatSequence
-      .flatMap { results =>
-        IO.println(s"=== Full table read benchmark (n=$expectedCount, avg of $runs runs) ===") *>
-        results.groupMap(_._1)(_._2).view.mapValues{ timings =>
-          timings.map(_.toMillis).sum/timings.size
-        }.toList.traverse_{case (label, ms) =>IO.println(f"$label%-24s $ms%6d ms")}
-      }
+    }.flatMap(_.print(repos.map(_._1)))
   }
 }

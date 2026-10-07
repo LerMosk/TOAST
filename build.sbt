@@ -26,8 +26,6 @@ lazy val common = (project in file("common"))
     name := "toast-common"
   )
 
-// First benchmark: scalar (class-table-inheritance) vs JSONB for an ADT whose variable
-// data lives in a collection (events_job_created_params).
 lazy val core = (project in file("core"))
   .dependsOn(common)
   .settings(commonSettings)
@@ -36,13 +34,6 @@ lazy val core = (project in file("core"))
     libraryDependencies += "com.github.pureconfig" %% "pureconfig" % "0.17.10"
   )
 
-// Second benchmark: same idea, but for a "wide row" ADT (many flat fields, no Param) —
-// fully independent of `core`, its own package (toast.wide) and its own wide_-prefixed tables.
-lazy val wide = (project in file("wide"))
-  .dependsOn(common)
-  .settings(commonSettings)
-  .settings(name := "toast-wide")
-
 lazy val root = (project in file("."))
-  .aggregate(common, core, wide)
+  .aggregate(common, core)
   .settings(name := "TOAST")

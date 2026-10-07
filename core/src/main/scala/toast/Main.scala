@@ -6,6 +6,7 @@ import toast.bench.Benchmark
 import toast.config.Config
 import toast.db.{Db, EventRepo, JsonbEventRepo, ScalarEventRepo}
 import toast.generator.EventGenerator
+import toast.size.SizeReporter
 
 object Main extends IOApp {
 
@@ -29,11 +30,8 @@ object Main extends IOApp {
         events = EventGenerator.generate(config.generateEvents, config)
         _ <- IO.println("Recreating schema...")
         _ <- db.recreateSchema(xa)
-        _ <- Benchmark.insertBenchmarkReport(repos, Stream.emits(events).covary[IO], config.generateEvents.toLong)
-      //  _ <- IO.println("Analyzing tables...")
-        _ <- db.analyze(xa)
-        _ <- Benchmark.sizeReport(xa, db.scalarTables, db.jsonbTables)
-        _ <- Benchmark.readBenchmarkReport(repos, config.generateEvents.toLong)
+        _ <- Benchmark.benchmark(repos, events)
+        _ <- SizeReporter.sizeReport(xa, db.scalarTables, db.jsonbTables)
       } yield ExitCode.Success
     }
   }

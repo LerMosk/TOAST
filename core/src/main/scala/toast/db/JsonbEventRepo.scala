@@ -23,10 +23,10 @@ final class JsonbEventRepo(xa: Transactor[IO], tableName: String, batchSize: Int
       s"INSERT INTO $tableName (event_id, job_id, event_type, occurred_at, source, level, body) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
 
-  override def insertAll(events: Stream[IO, Event]): IO[Unit] =
+   def insertAll(events: Stream[IO, Event]): IO[Unit] =
     events.chunkN(batchSize).evalMap(chunk => insert.updateMany(chunk.toList.map(toRow)).transact(xa).void).compile.drain
 
-  override def selectAll(): Stream[IO, Event] =
+   def selectAll(): Stream[IO, Event] =
     Fragment
       .const(s"SELECT event_id, job_id, event_type, occurred_at, source, level, body FROM $tableName")
       .query[Row]
@@ -35,4 +35,11 @@ final class JsonbEventRepo(xa: Transactor[IO], tableName: String, batchSize: Int
       .map { case (eventId, jobId, eventType, occurredAt, source, level, body) =>
         Event(eventId, jobId, eventType, occurredAt, source, level, body)
       }
+
+  def truncate(): IO[Unit] =
+    Fragment.const(s"TRUNCATE $tableName").update.run.transact(xa).void
+
+  def analyse(): IO[Unit] =
+    Fragment.const(s"ANALYSE $tableName").update.run.transact(xa).void
+
 }

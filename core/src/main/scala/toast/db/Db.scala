@@ -132,11 +132,6 @@ final class Db(config: Config) {
     sql"ALTER TABLE events_jsonb_external ALTER COLUMN body SET STORAGE EXTERNAL"
 
   private val ddlStatements: List[Fragment] = {
-    // Drops always cover every possible table (idempotent DROP IF EXISTS), regardless of
-    // which variants this run's config enables: a *previous* run may have had a different
-    // config and left tables behind with a FK into events_scalar, which would otherwise
-    // block dropping it. Only creates are conditional on the current config.
-    // Grandchild first: it holds a FK into events_job_created, which itself holds a FK into events_scalar.
     val dropChildren =
       List(dropJobCreatedParams, dropJobCreated, dropJobInProgress, dropJobSuccess, dropJobFailed)
 
@@ -152,9 +147,4 @@ final class Db(config: Config) {
 
   def recreateSchema(xa: Transactor[IO]): IO[Unit] =
     ddlStatements.traverse_(_.update.run.transact(xa))
-
-  def analyze(xa: Transactor[IO]): IO[Unit] =
-    (scalarTables :+ jsonbTable :+ jsonbExternalTable).traverse_ { table =>
-      Fragment.const(s"ANALYZE $table").update.run.transact(xa)
-    }
 }

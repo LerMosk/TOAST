@@ -146,4 +146,18 @@ final class ScalarEventRepo(xa: Transactor[IO], config: Config, batchSize: Int) 
           Event(r.eventId, r.jobId, r.eventType, r.occurredAt, r.source, r.level, body)
         }
     }
+
+  def truncate(): IO[Unit] =
+    fr"TRUNCATE ${tables()}".update.run.transact(xa).void
+
+  def analyse(): IO[Unit] =
+    fr"ANALYSE ${tables()}".update.run.transact(xa).void
+
+  private def tables(): Fragment = {
+    val created = if (config.enableJobCreated) fr",events_job_created,events_job_created_params" else Fragment.empty
+    val failed = if (config.enableJobFailed) fr",events_job_failed" else Fragment.empty
+    val success = if (config.enableJobSuccess) fr",events_job_success" else Fragment.empty
+    val inProgress = if (config.enableJobInProgress) fr",events_job_in_progress" else Fragment.empty
+    fr"events_scalar $created $failed $success $inProgress"
+  }
 }
